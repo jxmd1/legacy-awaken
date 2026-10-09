@@ -1,0 +1,93 @@
+[
+ {
+  "name": "ribbon",
+  "rot": 0,
+  "cx": 312.5546875,
+  "cy": 43,
+  "w": 369,
+  "h": 36,
+  "fontSize": 26,
+  "lineHeight": "normal",
+  "letterSpacing": "0.26px",
+  "family": "\"M PLUS Rounded 1c\", sans-serif",
+  "weight": "900"
+ },
+ {
+  "name": "tag",
+  "rot": -3,
+  "cx": 750.1159362792969,
+  "cy": 466.4140167236328,
+  "w": 321,
+  "h": 44,
+  "fontSize": 30,
+  "lineHeight": "normal",
+  "letterSpacing": "normal",
+  "family": "\"Dela Gothic One\"",
+  "weight": "400"
+ },
+ {
+  "name": "title1",
+  "rot": -3,
+  "cx": 749.9873046875,
+  "cy": 541.9220123291016,
+  "w": 631,
+  "h": 151,
+  "fontSize": 104,
+  "lineHeight": "109.2px",
+  "letterSpacing": "normal",
+  "family": "\"Kaushan Script\"",
+  "weight": "400"
+ },
+ {
+  "name": "title2",
+  "rot": -3,
+  "cx": 749.9819641113281,
+  "cy": 645.1096496582031,
+  "w": 746,
+  "h": 191,
+  "fontSize": 132,
+  "lineHeight": "125.4px",
+  "letterSpacing": "5.28px",
+  "family": "\"Dela Gothic One\"",
+  "weight": "400"
+ },
+ {
+  "name": "badge_top",
+  "rot": -6,
+  "cx": 162.22362518310547,
+  "cy": 636.8808288574219,
+  "w": 113,
+  "h": 58,
+  "fontSize": 40,
+  "lineHeight": "40px",
+  "letterSpacing": "normal",
+  "family": "\"Dela Gothic One\"",
+  "weight": "400"
+ },
+ {
+  "name": "badge_bottom",
+  "rot": -6,
+  "cx": 175.2853775024414,
+  "cy": 692.3192138671875,
+  "w": 144,
+  "h": 31,
+  "fontSize": 22,
+  "lineHeight": "normal",
+  "letterSpacing": "normal",
+  "family": "\"M PLUS Rounded 1c\", sans-serif",
+  "weight": "900"
+ },
+ {
+  "name": "footer",
+  "rot": 0,
+  "cx": 749.9921875,
+  "cy": 774,
+  "w": 653,
+  "h": 36,
+  "fontSize": 24,
+  "lineHeight": "normal",
+  "letterSpacing": "normal",
+  "family": "\"M PLUS Rounded 1c\", sans-serif",
+  "weight": "800"
+ }
+]

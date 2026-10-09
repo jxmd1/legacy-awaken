@@ -1,0 +1,30 @@
+[
+ {
+  "layer": "plate_ribbon",
+  "left": 45,
+  "top": 3,
+  "width": 504,
+  "height": 102
+ },
+ {
+  "layer": "plate_tag",
+  "left": 568,
+  "top": 427,
+  "width": 365,
+  "height": 80
+ },
+ {
+  "layer": "plate_badge",
+  "left": 68,
+  "top": 592,
+  "width": 195,
+  "height": 130
+ },
+ {
+  "layer": "plate_footer",
+  "left": 0,
+  "top": 745,
+  "width": 1500,
+  "height": 55
+ }
+]
