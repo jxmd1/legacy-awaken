@@ -132,6 +132,16 @@ python sprite_harmonize.py --batch SplitSheetNaruto/ SplitSheetNaruto_harmonized
 
 Use the newest, largest main-body piece as the reference. Color families and their ranges are listed in `FAMILIES` at the top of the script, so other characters can get their own (for example a different jacket color).
 
+## Sprite Joints (`sprite_joints.py`)
+
+Every part of a split sheet has a full outline, so wherever two parts overlap in the rig you see a dark seam. `sprite_joints.py` feathers each part's connecting end: the outline there dissolves into the part's own fill color and the end fades to transparent, so it melts into the part underneath. Run it after `sprite_harmonize.py`, since a fade only hides the seam when both parts share the same colors.
+
+```bash
+python sprite_joints.py --batch SplitSheetNaruto_harmonized/ SplitSheetNaruto_blended/
+```
+
+Which end of which part fades is listed in `JOINTS` at the top of the script (for example `"LeftArm.png": ["top"]`, `"New/ArmRaised.png": ["bottom-left"]`). Edit that list, or pass your own with `--joints joints.json`, for other characters or rigs. `--fade` sets the fade length as a share of the part's length (default 0.07).
+
 ---
 
 ## Files
@@ -140,6 +150,7 @@ Use the newest, largest main-body piece as the reference. Color families and the
 index.html           Legacy Awaken app (single file, no build step)
 storm_film.py        Batch script
 sprite_harmonize.py  Makes all parts of a split sprite sheet use the same colors
+sprite_joints.py     Feathers the connecting ends of sprite parts so joints have no seams
 requirements.txt     Python packages for the script
 examples/sample_box.png   Sample box used to test both
 ```
