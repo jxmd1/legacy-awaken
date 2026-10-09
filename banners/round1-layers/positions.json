@@ -1,0 +1,100 @@
+[
+ {
+  "layer": "background",
+  "left": 0,
+  "top": 0,
+  "width": 1500,
+  "height": 800
+ },
+ {
+  "layer": "panel_sasuke",
+  "left": 0,
+  "top": 56,
+  "width": 418,
+  "height": 674
+ },
+ {
+  "layer": "panel_gaara",
+  "left": 1089,
+  "top": 56,
+  "width": 411,
+  "height": 674
+ },
+ {
+  "layer": "panel_kakashi",
+  "left": 211,
+  "top": 28,
+  "width": 463,
+  "height": 674
+ },
+ {
+  "layer": "panel_haku",
+  "left": 833,
+  "top": 28,
+  "width": 463,
+  "height": 674
+ },
+ {
+  "layer": "naruto",
+  "left": 498,
+  "top": 0,
+  "width": 684,
+  "height": 800
+ },
+ {
+  "layer": "badge",
+  "left": 68,
+  "top": 592,
+  "width": 195,
+  "height": 130
+ },
+ {
+  "layer": "ribbon",
+  "left": 45,
+  "top": 3,
+  "width": 504,
+  "height": 102
+ },
+ {
+  "layer": "tag",
+  "left": 568,
+  "top": 427,
+  "width": 365,
+  "height": 80
+ },
+ {
+  "layer": "title_legacy_awaken",
+  "left": 427,
+  "top": 467,
+  "width": 661,
+  "height": 193
+ },
+ {
+  "layer": "title_round1",
+  "left": 360,
+  "top": 582,
+  "width": 781,
+  "height": 178
+ },
+ {
+  "layer": "footer",
+  "left": 0,
+  "top": 745,
+  "width": 1500,
+  "height": 55
+ },
+ {
+  "layer": "reel_left",
+  "left": 0,
+  "top": 0,
+  "width": 88,
+  "height": 800
+ },
+ {
+  "layer": "reel_right",
+  "left": 1412,
+  "top": 0,
+  "width": 88,
+  "height": 800
+ }
+]
