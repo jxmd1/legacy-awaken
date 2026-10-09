@@ -33,7 +33,16 @@ The usual flow is to dial in a look in the app, copy its settings into the scrip
 4. **Check the timeline** under the preview. It has one cell per frame of the loop: dark cells are black lines, light cells are white lines, and the letter shows which zone the line is in (L, M, R). Click a cell to stop on that frame. Press and hold *Hold for original* to compare against the unfiltered image.
 5. **Export:**
    - *Render video* records the loop in real time (4 loops ≈ 8 seconds), shows you the result, then *Save video* downloads it. The format is MP4 where the browser supports recording it (current Chrome and Edge), otherwise WebM.
-   - *Save this frame (PNG)* downloads the current frame.
+   - *Save this frame (PNG)* downloads the current frame (the overlay alone if the preview is set to *Overlay only*).
+   - *Save all frames (ZIP)* downloads every frame of the loop as numbered PNGs (`name_001.png`, `name_002.png`, …) plus a `README.txt` with the frame rate and size. Pick **Overlay only** or **Full image** in the menu next to the button.
+
+### Overlay frames
+
+Switch the preview menu from *Final look* to **Overlay only** to see just the film layer: grain, scratch lines and dust on a transparent background (shown over gray in the app). Each saved overlay frame is a transparent PNG: black where the film darkens the art, white where it lightens it.
+
+To use them, keep the original art as it is and play the overlay frames in order on top of it with **normal alpha blending at 100% opacity**, looping at the frame rate in the ZIP's `README.txt`. No special blend mode is needed, so it works in any engine or editor.
+
+*Overlay frames* in the controls sets what the overlay includes: grain and flicker, scratch lines, dust, edge darkening, and whether to clip it to the box shape so it stays transparent outside the box. Color tone (sepia, fade, brightness) can't be carried by an overlay, so it only appears in *Full image* frames.
 
 ### What the controls do
 
@@ -54,6 +63,8 @@ The usual flow is to dial in a look in the app, copy its settings into the scrip
 | Motion | Frame rate, Loop length | Speed and length of the loop |
 | | Projector wobble | Shakes the whole image by a few pixels. Keep at 0 for box art so the art stays still |
 | | Random seed | Different line positions and dust; *Shuffle* picks a new one |
+| Overlay frames | Grain, lines, dust, edge darkening | What the overlay-only frames include |
+| | Clip to the box shape | Keeps the overlay transparent outside the box |
 | Output | Render size | 4× gives hairline scratches; 1× keeps the original size |
 | | Apply to | *Box only* skips a gray-and-white checkerboard background baked into a screenshot; transparent PNGs keep their transparency either way |
 
