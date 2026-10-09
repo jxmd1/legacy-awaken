@@ -118,11 +118,36 @@ In the app, open **Use in batch script** at the bottom of the controls and press
 
 ---
 
+## Sprite Match (`sprite_match.py`)
+
+Clean character sprites look pasted on over the Storm-style jutsu backgrounds, which are muted, slightly soft and carry a fine texture. `sprite_match.py` grades sprites to sit inside those scenes: dimmer whites, lifted blacks, a little less saturation, slightly cool shadows, a touch of softening, and fine colored speckle baked into the sprite. The texture strength was calibrated against a real in-game screenshot so that, at the sprite's on-screen size (about half its file size), it measures the same as the background's.
+
+```bash
+# a whole split sheet, keeping subfolders and transparency
+python sprite_match.py --batch SplitSheetNaruto/ SplitSheetNaruto_matched/
+
+# lighter match that keeps more of the original color
+python sprite_match.py --batch SplitSheetNaruto/ SplitSheetNaruto_matched_light/ --strength 0.7
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--strength` | 0 = untouched, 1 = full match (default). 0.7 keeps colors a bit brighter |
+| `--look` | Which measured background to match. `storm_bg` is the stone face / gate jutsu scene |
+| `--seed` | Changes the texture pattern |
+
+The texture is static, the same way the background's is. Sprite sizes and transparency stay exactly as they were. The tuning numbers live in `LOOKS` at the top of the script; a new background can get its own entry.
+
+Only grade the character's body parts. Effects drawn on top (chakra, seals, jutsu flashes) should stay bright, the way they are in the original game.
+
+---
+
 ## Files
 
 ```
 index.html           Legacy Awaken app (single file, no build step)
 storm_film.py        Batch script
+sprite_match.py      Grades character sprites to match Storm-style backgrounds
 requirements.txt     Python packages for the script
 examples/sample_box.png   Sample box used to test both
 ```
