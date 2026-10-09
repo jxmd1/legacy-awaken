@@ -304,7 +304,7 @@ const GROUPS = [
     { key: "desat", label: "Desaturate", min: 0, max: 1, step: .01, fmt: pct, kind: "color" },
     { key: "fade", label: "Fade (lifted blacks, dull whites)", min: 0, max: .2, step: .005, fmt: v => v.toFixed(3), kind: "color" },
     { key: "bright", label: "Brightness", min: .8, max: 1.3, step: .01, fmt: v => v.toFixed(2) + "×", kind: "color" },
-    { key: "vignette", label: "Edge darkening", min: 0, max: 1, step: .01, fmt: pct, kind: "color" }
+    { key: "vignette", label: "Edge darkening", min: 0, max: 1, step: .01, fmt: pct }
   ]},
   { name: "Grain", open: true, items: [
     { key: "grain", label: "Grain amount", min: 0, max: .12, step: .002, fmt: v => (v * 100).toFixed(1), kind: "color" },
@@ -352,55 +352,37 @@ delete P.label;
 const persist = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify({ P, presetId })); } catch (e) {} };
 
 const view = document.getElementById("view");
-const vctx = view.getContext("2d", { willReadFrequently: true });
+const vctx = view.getContext("2d");
 let srcName = "box_art";
-let img = null, natW = 0, natH = 0, R = 1, W = 0, H = 0, N = 0;
-let src = null, base = null, gm = null, vig = null, mask = null, darkAcc = null, lightAcc = null;
-let outImg = null, hasAlpha = false, maskNote = "";
+let img = null, natW = 0, natH = 0, hasAlpha = false, maskNote = "", maskCanvas = null;
+let RX = 1, EW = 0, EH = 0;            // export scale and size
+let PV = null, origImage = null;       // preview renderer + untouched preview image
 let sched = [];
 let frame = 0, playing = !matchMedia("(prefers-reduced-motion: reduce)").matches;
 let showOriginal = false, recording = false, dirty = true;
-const noiseSmall = document.createElement("canvas"), nsCtx = noiseSmall.getContext("2d");
-const noiseBig = document.createElement("canvas"), nbCtx = noiseBig.getContext("2d", { willReadFrequently: true });
+let needPrep = false, needColor = false, needSched = false;
+const cache = new Map(); let cacheOK = false;
+const PREVIEW_MAX = 720;     // longest side of the live preview, in pixels
+const EXPORT_MAX = 2048;     // longest side of saved files
+const CACHE_MAX = 160e6;     // bytes of finished preview frames kept for instant replay
 
 /* ---------------- helpers ---------------- */
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const $ = id => document.getElementById(id);
 function setStatus(msg, cls) { const s = $("status"); s.textContent = msg; s.className = "status" + (cls ? " " + cls : ""); }
+const nextTick = () => new Promise(r => setTimeout(r, 0));
 
-/* ---------------- preparation ---------------- */
-function prepare() {
-  if (!img) return;
-  const cap = Math.max(1, Math.floor(1600 / Math.max(natW, natH)));
-  R = Math.min(P.renderScale, cap);
-  W = natW * R; H = natH * R; N = W * H;
-  view.width = W; view.height = H;
-  const c = document.createElement("canvas"); c.width = W; c.height = H;
-  const cx = c.getContext("2d", { willReadFrequently: true });
-  cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = "high";
-  cx.drawImage(img, 0, 0, W, H);
-  src = cx.getImageData(0, 0, W, H).data;
-  base = new Float32Array(N * 3); gm = new Float32Array(N); vig = new Float32Array(N);
-  darkAcc = new Float32Array(N); lightAcc = new Float32Array(N);
-  outImg = vctx.createImageData(W, H);
-  noiseBig.width = W; noiseBig.height = H;
-  buildMask();
-  prepareColor();
-  dirty = true;
-}
-
-function buildMask() {
-  mask = new Float32Array(N);
-  // native pixels for detection
+/* ---------------- image analysis (native size, once per image) ---------------- */
+function analyseImage() {
   const c = document.createElement("canvas"); c.width = natW; c.height = natH;
   const cx = c.getContext("2d", { willReadFrequently: true });
   cx.drawImage(img, 0, 0);
   const d = cx.getImageData(0, 0, natW, natH).data;
   hasAlpha = false;
   for (let i = 3; i < d.length; i += 4) if (d[i] < 250) { hasAlpha = true; break; }
+  maskCanvas = null;
   if (P.maskMode === "whole" || hasAlpha) {
-    mask.fill(1);
     maskNote = hasAlpha ? "Transparent areas stay transparent." : "Effect covers the whole image.";
     return;
   }
@@ -417,12 +399,13 @@ function buildMask() {
   for (let y = 0; y < natH; y++) { push(y * natW); push(y * natW + natW - 1); }
   while (stack.length) {
     const i = stack.pop(), x = i % natW, y = (i / natW) | 0;
-    if (x > 0) push(i - 1); if (x < natW - 1) push(i + 1);
-    if (y > 0) push(i - natW); if (y < natH - 1) push(i + natW);
+    if (x > 0) push(i - 1);
+    if (x < natW - 1) push(i + 1);
+    if (y > 0) push(i - natW);
+    if (y < natH - 1) push(i + natW);
   }
   let bgCount = 0; for (let i = 0; i < n; i++) bgCount += bg[i];
-  if (bgCount < n * 0.01) { mask.fill(1); maskNote = "No checkerboard found, so the effect covers the whole image."; return; }
-  // soften edge (3x3 box) and upscale smoothly
+  if (bgCount < n * 0.01) { maskNote = "No checkerboard found, so the effect covers the whole image."; return; }
   const m = cx.createImageData(natW, natH);
   for (let y = 0; y < natH; y++) for (let x = 0; x < natW; x++) {
     let s = 0, k = 0;
@@ -434,19 +417,69 @@ function buildMask() {
     m.data[j] = m.data[j + 1] = m.data[j + 2] = v; m.data[j + 3] = 255;
   }
   cx.putImageData(m, 0, 0);
-  const big = document.createElement("canvas"); big.width = W; big.height = H;
-  const bx = big.getContext("2d", { willReadFrequently: true });
-  bx.imageSmoothingEnabled = true; bx.drawImage(c, 0, 0, W, H);
-  const md = bx.getImageData(0, 0, W, H).data;
-  for (let i = 0; i < N; i++) mask[i] = md[i * 4] / 255;
+  maskCanvas = c;
   maskNote = "Box detected; the checkerboard stays untouched.";
 }
 
-function prepareColor() {
-  if (!src) return;
-  const { sepia, desat, fade, bright, grain, vignette } = P;
-  const hw = W / 2, hh = H / 2;
+/* ---------------- renderer (one for the preview, a fresh one per export) ---------------- */
+function makeRenderer(s) {
+  const W = Math.max(1, Math.round(natW * s)), H = Math.max(1, Math.round(natH * s)), N = W * H;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = "high";
+  cx.drawImage(img, 0, 0, W, H);
+  const src = cx.getImageData(0, 0, W, H).data;
+  const mask = new Float32Array(N);
+  if (maskCanvas) {
+    cx.clearRect(0, 0, W, H); cx.drawImage(maskCanvas, 0, 0, W, H);
+    const md = cx.getImageData(0, 0, W, H).data;
+    for (let i = 0; i < N; i++) mask[i] = md[i * 4] / 255;
+  } else mask.fill(1);
+  const vshape = new Float32Array(N), hw = W / 2, hh = H / 2;   // vignette falloff, scaled by the slider later
   for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) {
+    const dd = Math.sqrt(((x - hw) / hw) ** 2 + ((y - hh) / hh) ** 2) / Math.SQRT2;
+    vshape[i] = Math.pow(clamp((dd - .35) / .65, 0, 1), 1.6);
+  }
+  return { s, W, H, N, src, mask, vshape,
+    base: new Float32Array(N * 3), gm: new Float32Array(N),
+    darkAcc: new Float32Array(N), lightAcc: new Float32Array(N), out: new ImageData(W, H),
+    bank: null, bankKey: null };
+}
+
+/* Grain: a few full-size noise textures made once per grain size, reused each frame at a random offset. */
+const BANK = 6;
+function ensureNoise(rd) {
+  const gs = Math.max(1, P.grainSize * rd.s);
+  if (rd.bankKey === gs) return;
+  const { W, H, N } = rd;
+  const nw = Math.ceil(W / gs), nh = Math.ceil(H / gs);
+  const ns = document.createElement("canvas"); ns.width = nw; ns.height = nh;
+  const nsx = ns.getContext("2d");
+  const nb = document.createElement("canvas"); nb.width = W; nb.height = H;
+  const nbx = nb.getContext("2d", { willReadFrequently: true });
+  nbx.imageSmoothingEnabled = true; nbx.imageSmoothingQuality = "high";
+  rd.bank = [];
+  for (let b = 0; b < BANK; b++) {
+    const rng = mulberry32(4242 + b * 7919);
+    const u = () => (rng() + rng() + rng() - 1.5) * 2;   // ~N(0,1)
+    const ni = nsx.createImageData(nw, nh), nd = ni.data;
+    for (let i = 0; i < nw * nh; i++) {
+      const g = u(), j = i * 4;
+      nd[j] = 128 + (g + .25 * u()) * 32; nd[j + 1] = 128 + (g + .25 * u()) * 32; nd[j + 2] = 128 + (g + .25 * u()) * 32; nd[j + 3] = 255;
+    }
+    nsx.putImageData(ni, 0, 0);
+    nbx.drawImage(ns, 0, 0, nw * gs, nh * gs);
+    const big = nbx.getImageData(0, 0, W, H).data, t = new Int8Array(N * 3);
+    for (let i = 0; i < N; i++) { t[i * 3] = big[i * 4] - 128; t[i * 3 + 1] = big[i * 4 + 1] - 128; t[i * 3 + 2] = big[i * 4 + 2] - 128; }
+    rd.bank.push(t);
+  }
+  rd.bankKey = gs;
+}
+
+function prepColor(rd) {
+  const { sepia, desat, fade, bright, grain } = P;
+  const { N, src, base, gm } = rd;
+  for (let i = 0; i < N; i++) {
     let r = src[i * 4] / 255, g = src[i * 4 + 1] / 255, b = src[i * 4 + 2] / 255;
     const l0 = .299 * r + .587 * g + .114 * b;
     r = r * (1 - desat) + l0 * desat; g = g * (1 - desat) + l0 * desat; b = b * (1 - desat) + l0 * desat;
@@ -456,11 +489,101 @@ function prepareColor() {
     base[i * 3] = r; base[i * 3 + 1] = g; base[i * 3 + 2] = b;
     const l1 = .299 * r + .587 * g + .114 * b;
     gm[i] = (1 - Math.abs(l1 * 2 - 1) * .6) * grain;
-    const dd = Math.sqrt(((x - hw) / hw) ** 2 + ((y - hh) / hh) ** 2) / Math.SQRT2;
-    const v = Math.pow(clamp((dd - .35) / .65, 0, 1), 1.6);
-    vig[i] = 1 - v * vignette;
   }
-  dirty = true;
+}
+
+/* Renders frame f into rd.out. Sizes in the controls are in export pixels; k converts to this renderer. */
+function renderInto(rd, f) {
+  const { W, H, src, mask, base, gm, vshape, darkAcc, lightAcc } = rd;
+  const o = rd.out.data, k = rd.s / RX;
+  const rng = mulberry32(P.seed * 1000 + f);
+
+  ensureNoise(rd);
+  const nz = rd.bank[Math.floor(rng() * BANK)], ox = Math.floor(rng() * W), oy = Math.floor(rng() * H);
+  const fl = 1 + (rng() * 2 - 1) * P.flicker;
+  const wob = P.wobble * k;
+  const dx = wob ? Math.round((rng() * 2 - 1) * wob) : 0, dy = wob ? Math.round((rng() * 2 - 1) * wob) : 0;
+
+  darkAcc.fill(0); lightAcc.fill(0);
+  const e = sched[f];
+  if (e) {
+    const srng = mulberry32(P.seed * 31 + e.slot);
+    const lo = .08 + .84 * e.lane / P.lanes, hi = .08 + .84 * (e.lane + 1) / P.lanes;
+    const x0 = ((lo + hi) / 2 + (srng() * .4 - .2) * (hi - lo)) * W;
+    const drift = (srng() * .02 - .01) * W;
+    const strength = .7 + .3 * srng();
+    const jx = P.jitter ? Math.floor(rng() * 3) - 1 : 0;
+    const amp = strength * (.6 + .4 * rng());
+    const sig = P.softness * k, K = sig < .2 ? 0 : Math.ceil(sig * 3);
+    const wts = []; let ws = 0;
+    for (let q = -K; q <= K; q++) { const w = K ? Math.exp(-q * q / (2 * sig * sig)) : 1; wts.push(w); ws += w; }
+    const target = e.sign < 0 ? darkAcc : lightAcc;
+    const mult = e.sign < 0 ? P.blackOpacity : .6 * P.whiteOpacity;
+    for (let y = 0; y < H; y++) {
+      const xc = Math.round(x0 + drift * (y / H)) + jx;
+      for (let q = -K; q <= K; q++) { const x = xc + q; if (x >= 0 && x < W) target[y * W + x] += amp * mult * wts[q + K] / ws; }
+    }
+  }
+  for (let d = 0; d < P.dust; d++) {
+    const x = rng() * W, y = rng() * H, r = (.6 + 1.6 * rng()) * P.dustSize * rd.s;
+    const dark = rng() < .65, s = .4 + .6 * rng(), asp = .5 + rng();
+    const x1 = Math.max(0, Math.floor(x - 3 * r)), x2 = Math.min(W - 1, Math.ceil(x + 3 * r));
+    const y1 = Math.max(0, Math.floor(y - 3 * r)), y2 = Math.min(H - 1, Math.ceil(y + 3 * r));
+    const acc = dark ? darkAcc : lightAcc, kk = dark ? .55 : .35;
+    for (let yy = y1; yy <= y2; yy++) for (let xx = x1; xx <= x2; xx++) {
+      const ddx = xx - x, ddy = (yy - y) * asp;
+      acc[yy * W + xx] += s * kk * Math.exp(-(ddx * ddx + ddy * ddy) / (2 * r * r));
+    }
+  }
+
+  const vg = P.vignette;
+  for (let y = 0; y < H; y++) {
+    const sy = clamp(y - dy, 0, H - 1);
+    let ny = y + oy; if (ny >= H) ny -= H;
+    const nrow = ny * W;
+    let nx = ox;
+    for (let x = 0; x < W; x++, nx = nx + 1 === W ? 0 : nx + 1) {
+      const sx = clamp(x - dx, 0, W - 1), j = sy * W + sx, i = y * W + x, i4 = i * 4, j4 = j * 4;
+      const m = mask[j];
+      if (m <= 0) { o[i4] = src[j4]; o[i4 + 1] = src[j4 + 1]; o[i4 + 2] = src[j4 + 2]; o[i4 + 3] = src[j4 + 3]; continue; }
+      const g = gm[j] / 32, v = (1 - vshape[i] * vg) * fl, L = lightAcc[i], D = (1 - Math.min(darkAcc[i], 1)) * 255 * m, j3 = j * 3, n3 = (nrow + nx) * 3, im = 1 - m;
+      o[i4] = src[j4] * im + ((base[j3] + nz[n3] * g) * v + L) * D;
+      o[i4 + 1] = src[j4 + 1] * im + ((base[j3 + 1] + nz[n3 + 1] * g) * v + L) * D;
+      o[i4 + 2] = src[j4 + 2] * im + ((base[j3 + 2] + nz[n3 + 2] * g) * v + L) * D;
+      o[i4 + 3] = src[j4 + 3];
+    }
+  }
+  return rd.out;
+}
+
+/* ---------------- preview ---------------- */
+function rebuildAll() {
+  if (!img) return;
+  analyseImage();
+  const longest = Math.max(natW, natH);
+  RX = Math.min(P.renderScale, EXPORT_MAX / longest);
+  EW = Math.round(natW * RX); EH = Math.round(natH * RX);
+  PV = makeRenderer(Math.min(RX, PREVIEW_MAX / longest));
+  view.width = PV.W; view.height = PV.H;
+  origImage = new ImageData(new Uint8ClampedArray(PV.src), PV.W, PV.H);
+  prepColor(PV);
+  applyZoom();
+  invalidate();
+  const shrunk = RX < P.renderScale ? " Export size limited to " + EXPORT_MAX + " px for a large image." : "";
+  const lighter = PV.W < EW ? " Preview is shown smaller for speed; saved files use the full size." : "";
+  setStatus(natW + "×" + natH + " px → saves at " + EW + "×" + EH + ". " + maskNote + shrunk + lighter);
+}
+function invalidate() { cache.clear(); cacheOK = PV ? PV.N * 4 * P.frames < CACHE_MAX : false; dirty = true; }
+function showFrame(f) {
+  if (!PV) return;
+  if (showOriginal) { vctx.putImageData(origImage, 0, 0); return; }
+  let im = cacheOK ? cache.get(f) : null;
+  if (!im) {
+    renderInto(PV, f);
+    im = PV.out;
+    if (cacheOK) { im = new ImageData(new Uint8ClampedArray(PV.out.data), PV.W, PV.H); cache.set(f, im); }
+  }
+  vctx.putImageData(im, 0, 0);
 }
 
 /* ---------------- line schedule ---------------- */
@@ -513,86 +636,6 @@ function renderTimeline() {
   dirty = true;
 }
 
-/* ---------------- frame rendering ---------------- */
-function renderFrame(f) {
-  if (!src) return;
-  const o = outImg.data;
-  if (showOriginal) { o.set(src); vctx.putImageData(outImg, 0, 0); return; }
-  const rng = mulberry32(P.seed * 1000 + f);
-
-  // grain: low-res noise, upscaled smoothly
-  const gs = Math.max(1, P.grainSize * R);
-  const nw = Math.ceil(W / gs), nh = Math.ceil(H / gs);
-  if (noiseSmall.width !== nw || noiseSmall.height !== nh) { noiseSmall.width = nw; noiseSmall.height = nh; }
-  const ni = nsCtx.createImageData(nw, nh), nd = ni.data;
-  const u = () => (rng() + rng() + rng() - 1.5) * 2;   // ~N(0,1)
-  for (let i = 0; i < nw * nh; i++) {
-    const g = u(), j = i * 4;
-    nd[j] = 128 + (g + .25 * u()) * 32; nd[j + 1] = 128 + (g + .25 * u()) * 32; nd[j + 2] = 128 + (g + .25 * u()) * 32; nd[j + 3] = 255;
-  }
-  nsCtx.putImageData(ni, 0, 0);
-  nbCtx.imageSmoothingEnabled = true; nbCtx.imageSmoothingQuality = "high";
-  nbCtx.drawImage(noiseSmall, 0, 0, nw * gs, nh * gs);
-  const nz = nbCtx.getImageData(0, 0, W, H).data;
-
-  const fl = 1 + (rng() * 2 - 1) * P.flicker;
-  const wob = P.wobble ? P.wobble : 0;
-  const dx = wob ? Math.round((rng() * 2 - 1) * wob) : 0, dy = wob ? Math.round((rng() * 2 - 1) * wob) : 0;
-
-  darkAcc.fill(0); lightAcc.fill(0);
-  // scratch line
-  const e = sched[f];
-  if (e) {
-    const srng = mulberry32(P.seed * 31 + e.slot);
-    const lo = .08 + .84 * e.lane / P.lanes, hi = .08 + .84 * (e.lane + 1) / P.lanes;
-    const x0 = ((lo + hi) / 2 + (srng() * .4 - .2) * (hi - lo)) * W;
-    const drift = (srng() * .02 - .01) * W;
-    const strength = .7 + .3 * srng();
-    const jx = P.jitter ? Math.floor(rng() * 3) - 1 : 0;
-    const amp = strength * (.6 + .4 * rng());
-    const sig = P.softness, K = sig < .2 ? 0 : Math.ceil(sig * 3);
-    const wts = []; let ws = 0;
-    for (let k = -K; k <= K; k++) { const w = K ? Math.exp(-k * k / (2 * sig * sig)) : 1; wts.push(w); ws += w; }
-    const target = e.sign < 0 ? darkAcc : lightAcc;
-    const mult = e.sign < 0 ? P.blackOpacity : .6 * P.whiteOpacity;
-    for (let y = 0; y < H; y++) {
-      const xc = Math.round(x0 + drift * (y / H)) + jx;
-      for (let k = -K; k <= K; k++) { const x = xc + k; if (x >= 0 && x < W) target[y * W + x] += amp * mult * wts[k + K] / ws; }
-    }
-  }
-  // dust
-  for (let d = 0; d < P.dust; d++) {
-    const x = rng() * W, y = rng() * H, r = (.6 + 1.6 * rng()) * P.dustSize * R;
-    const dark = rng() < .65, s = .4 + .6 * rng(), asp = .5 + rng();
-    const x1 = Math.max(0, Math.floor(x - 3 * r)), x2 = Math.min(W - 1, Math.ceil(x + 3 * r));
-    const y1 = Math.max(0, Math.floor(y - 3 * r)), y2 = Math.min(H - 1, Math.ceil(y + 3 * r));
-    const acc = dark ? darkAcc : lightAcc, k = dark ? .55 : .35;
-    for (let yy = y1; yy <= y2; yy++) for (let xx = x1; xx <= x2; xx++) {
-      const ddx = xx - x, ddy = (yy - y) * asp;
-      acc[yy * W + xx] += s * k * Math.exp(-(ddx * ddx + ddy * ddy) / (2 * r * r));
-    }
-  }
-
-  // compose
-  for (let y = 0; y < H; y++) {
-    const sy = clamp(y - dy, 0, H - 1);
-    for (let x = 0; x < W; x++) {
-      const sx = clamp(x - dx, 0, W - 1), j = sy * W + sx, i = y * W + x, i4 = i * 4, j4 = j * 4;
-      const m = mask[j];
-      if (m <= 0) { o[i4] = src[j4]; o[i4 + 1] = src[j4 + 1]; o[i4 + 2] = src[j4 + 2]; o[i4 + 3] = src[j4 + 3]; continue; }
-      const g = gm[j], v = vig[i] * fl, L = lightAcc[i], D = 1 - Math.min(darkAcc[i], 1);
-      const r = ((base[j * 3] + (nz[i4] - 128) / 32 * g) * v + L) * D;
-      const gg = ((base[j * 3 + 1] + (nz[i4 + 1] - 128) / 32 * g) * v + L) * D;
-      const b = ((base[j * 3 + 2] + (nz[i4 + 2] - 128) / 32 * g) * v + L) * D;
-      o[i4] = src[j4] * (1 - m) + r * 255 * m;
-      o[i4 + 1] = src[j4 + 1] * (1 - m) + gg * 255 * m;
-      o[i4 + 2] = src[j4 + 2] * (1 - m) + b * 255 * m;
-      o[i4 + 3] = src[j4 + 3];
-    }
-  }
-  vctx.putImageData(outImg, 0, 0);
-}
-
 function updateCounter() {
   $("counter").innerHTML = "FR <b>" + String(frame + 1).padStart(2, "0") + "</b> / " + P.frames +
     " · " + (frame / P.fps).toFixed(2) + " s of " + (P.frames / P.fps).toFixed(2) + " s";
@@ -600,18 +643,21 @@ function updateCounter() {
   for (let k = 0; k < cells.length; k++) cells[k].classList.toggle("now", k === frame);
 }
 
-/* ---------------- playback loop ---------------- */
+/* ---------------- playback loop: applies queued changes once per screen refresh ---------------- */
 let last = 0, acc = 0;
 function tick(t) {
   if (!recording) {
+    if (needPrep) { needPrep = needColor = false; rebuildAll(); }
+    if (needColor) { needColor = false; if (PV) prepColor(PV); invalidate(); }
+    if (needSched) { needSched = false; if (frame >= P.frames) frame = 0; buildSchedule(); invalidate(); }
     const dt = last ? t - last : 0; last = t;
     if (playing) {
       acc += dt;
       const step = 1000 / P.fps;
       if (acc >= step) { frame = (frame + Math.floor(acc / step)) % P.frames; acc %= step; dirty = true; }
     }
-    if (dirty) { renderFrame(frame); updateCounter(); dirty = false; }
-  }
+    if (dirty) { showFrame(frame); updateCounter(); dirty = false; }
+  } else last = t;
   requestAnimationFrame(tick);
 }
 
@@ -671,10 +717,11 @@ function makeControl(it) {
 function setParam(it, v) {
   P[it.key] = v;
   if (LOOK_KEYS.includes(it.key)) { presetId = "custom"; syncPresetSelect(); }
-  if (it.kind === "prep") { prepare(); setStatus(maskNote); }
-  else if (it.kind === "color") prepareColor();
-  if (it.kind === "sched" || it.key === "frames") { if (frame >= P.frames) frame = 0; buildSchedule(); }
-  dirty = true; persist(); updateScript();
+  if (it.kind === "prep") needPrep = true;          // applied once per screen refresh in tick()
+  else if (it.kind === "color") needColor = true;
+  if (it.kind === "sched") needSched = true;
+  else if (it.key !== "fps" && it.key !== "loops") invalidate();
+  persist(); updateScript();
 }
 
 function syncControls() {
@@ -700,7 +747,7 @@ function applyPreset(id) {
   for (const k of LOOK_KEYS) P[k] = p[k];
   presetId = id; syncPresetSelect(); syncControls();
   if (frame >= P.frames) frame = 0;
-  prepareColor(); buildSchedule(); persist(); updateScript(); dirty = true;
+  needColor = needSched = true; invalidate(); persist(); updateScript();
 }
 
 /* ---------------- script preset ---------------- */
@@ -734,9 +781,7 @@ function loadFromUrl(url, name) {
     img = im; natW = im.naturalWidth; natH = im.naturalHeight; srcName = name;
     $("fileName").textContent = name === "box_art" ? "Sample: box art" : name;
     frame = 0; $("result").hidden = true;
-    prepare();
-    const capped = R < P.renderScale ? " Render size reduced to " + R + "× for a large image." : "";
-    setStatus(natW + "×" + natH + " px, rendering at " + W + "×" + H + ". " + maskNote + capped);
+    needPrep = false; rebuildAll();
   };
   im.onerror = () => setStatus("That file couldn't be opened as an image. Try a PNG or JPG.", "warn");
   im.src = url;
@@ -744,6 +789,7 @@ function loadFromUrl(url, name) {
 function loadFile(file) {
   if (!file || !file.type.startsWith("image/")) { setStatus("Pick an image file (PNG, JPG or WebP).", "warn"); return; }
   const name = file.name.replace(/\.[^.]+$/, "").replace(/[^\w\-]+/g, "_") || "image";
+  setStatus("Loading " + file.name + "…");
   const reader = new FileReader();
   reader.onload = () => loadFromUrl(reader.result, name);
   reader.readAsDataURL(file);
@@ -770,10 +816,11 @@ cmp.addEventListener("pointerdown", cmpOn);
 ["pointerup", "pointerleave", "pointercancel", "blur"].forEach(ev => cmp.addEventListener(ev, cmpOff));
 cmp.addEventListener("keydown", e => { if (e.key === " " || e.key === "Enter") cmpOn(e); });
 cmp.addEventListener("keyup", cmpOff);
-$("zoom").addEventListener("change", e => {
-  const z = e.target.value; gate.className = "gate zoom-" + z;
-  view.style.width = z === "fit" ? "" : (W * +z) + "px";   // 100% = one screen pixel per rendered pixel
-});
+function applyZoom() {
+  const z = $("zoom").value; gate.className = "gate zoom-" + z;
+  view.style.width = z === "fit" ? "" : (EW * +z) + "px";   // 100% = the saved file's real pixel size
+}
+$("zoom").addEventListener("change", applyZoom);
 
 /* ---------------- export ---------------- */
 let downloads = null;
@@ -800,9 +847,21 @@ async function offer(blob, filename) {
     return false;
   }
 }
-$("savePng").addEventListener("click", () => {
-  renderFrame(frame);
-  view.toBlob(b => { if (b) offer(b, srcName + "_legacy_fr" + String(frame + 1).padStart(2, "0") + ".png"); }, "image/png");
+function busy(on) {
+  recording = on;
+  $("renderVideo").disabled = on; $("savePng").disabled = on; $("progress").hidden = !on;
+  if (!on) { $("progress").firstElementChild.style.width = "0"; dirty = true; }
+}
+const setBar = p => { $("progress").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; };
+
+$("savePng").addEventListener("click", async () => {
+  if (!img || recording) return;
+  busy(true); setStatus("Rendering " + EW + "×" + EH + " frame…"); await nextTick();
+  const rd = makeRenderer(RX); prepColor(rd); renderInto(rd, frame);
+  const c = document.createElement("canvas"); c.width = rd.W; c.height = rd.H;
+  c.getContext("2d").putImageData(rd.out, 0, 0);
+  busy(false);
+  c.toBlob(b => { if (b) offer(b, srcName + "_legacy_fr" + String(frame + 1).padStart(2, "0") + ".png"); }, "image/png");
 });
 
 function pickMime() {
@@ -812,43 +871,66 @@ function pickMime() {
 }
 let lastVideo = null;
 $("renderVideo").addEventListener("click", async () => {
-  if (recording || !src) return;
+  if (recording || !img) return;
   const mime = pickMime();
-  if (!mime || !view.captureStream) { setStatus("This browser can't record video from the page. Use Save this frame, or the batch script.", "warn"); return; }
-  let stream = view.captureStream(0), track = stream.getVideoTracks()[0];
+  const rc = document.createElement("canvas");
+  if (!mime || !rc.captureStream) { setStatus("This browser can't record video from the page. Use Save this frame, or the batch script.", "warn"); return; }
+  busy(true);
+
+  // 1) render every frame of the loop at full size first, so recording never waits on rendering
+  const rd = makeRenderer(RX); prepColor(rd);
+  const F = P.frames, frames = [];
+  for (let f = 0; f < F; f++) {
+    setStatus("Rendering frame " + (f + 1) + " of " + F + " at " + rd.W + "×" + rd.H + "…");
+    renderInto(rd, f);
+    let bm = null;
+    try { bm = await createImageBitmap(rd.out); } catch (e) { bm = new ImageData(new Uint8ClampedArray(rd.out.data), rd.W, rd.H); }
+    frames.push(bm);
+    setBar((f + 1) / F * 0.5);
+    await nextTick();
+  }
+
+  // 2) play those frames into the recorder at the exact frame rate
+  rc.width = rd.W + (rd.W % 2); rc.height = rd.H + (rd.H % 2);   // even sizes for MP4
+  rc.style.cssText = "position:fixed;left:-99999px;top:0;width:2px;height:2px;pointer-events:none";
+  document.body.appendChild(rc);
+  const rcx = rc.getContext("2d");
+  const draw = k => { const fr = frames[k % F]; if (fr instanceof ImageData) rcx.putImageData(fr, 0, 0); else { rcx.clearRect(0, 0, rc.width, rc.height); rcx.drawImage(fr, 0, 0); } };
+  draw(0);
+  let stream = rc.captureStream(0), track = stream.getVideoTracks()[0];
   const manual = track && typeof track.requestFrame === "function";
-  if (!manual) { stream.getTracks().forEach(t => t.stop()); stream = view.captureStream(P.fps); track = stream.getVideoTracks()[0]; }
+  if (!manual) { stream.getTracks().forEach(t => t.stop()); stream = rc.captureStream(P.fps); track = stream.getVideoTracks()[0]; }
   let rec;
   try { rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12e6 }); }
-  catch (e) { setStatus("Video recording failed to start in this browser.", "warn"); return; }
+  catch (e) { rc.remove(); busy(false); setStatus("Video recording failed to start in this browser.", "warn"); return; }
   const chunks = []; rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
   const done = new Promise(res => rec.onstop = res);
-  recording = true; $("renderVideo").disabled = true; $("progress").hidden = false;
-  const bar = $("progress").firstElementChild; const total = P.loops * P.frames, step = 1000 / P.fps;
-  setStatus("Recording " + P.loops + " loop" + (P.loops > 1 ? "s" : "") + " in real time…");
+  const total = P.loops * F, step = 1000 / P.fps;
+  setStatus("Recording " + P.loops + " loop" + (P.loops > 1 ? "s" : "") + " (" + (total / P.fps).toFixed(1) + " s, plays in real time)…");
   rec.start(500);
   const t0 = performance.now();
   for (let k = 0; k < total; k++) {
-    renderFrame(k % P.frames); frame = k % P.frames; updateCounter();
+    draw(k);
     if (manual) track.requestFrame();
-    bar.style.width = ((k + 1) / total * 100) + "%";
+    setBar(0.5 + (k + 1) / total * 0.5);
     const wait = t0 + (k + 1) * step - performance.now();
     await new Promise(r => setTimeout(r, Math.max(0, wait)));
   }
   await new Promise(r => setTimeout(r, 150));
   rec.stop(); await done; stream.getTracks().forEach(t => t.stop());
-  recording = false; $("renderVideo").disabled = false; $("progress").hidden = true; bar.style.width = "0";
+  rc.remove(); frames.forEach(fr => fr.close && fr.close());
+  busy(false);
+
   const type = mime.split(";")[0], ext = type.includes("mp4") ? "mp4" : "webm";
   const blob = new Blob(chunks, { type });
   if (lastVideo) URL.revokeObjectURL(lastVideo.url);
   lastVideo = { blob, url: URL.createObjectURL(blob), name: srcName + "_legacy." + ext };
   $("resultVideo").src = lastVideo.url;
   $("resultName").textContent = lastVideo.name;
-  $("resultInfo").textContent = (total / P.fps).toFixed(1) + " s · " + W + "×" + H + " · " + (blob.size / 1048576).toFixed(1) + " MB" +
+  $("resultInfo").textContent = (total / P.fps).toFixed(1) + " s · " + rd.W + "×" + rd.H + " · " + (blob.size / 1048576).toFixed(1) + " MB" +
     (hasAlpha ? " · video has no transparency; transparent areas show black" : "");
   $("result").hidden = false;
   setStatus("Video ready. Check it below, then save.", "ok");
-  dirty = true;
 });
 $("saveVideo").addEventListener("click", () => { if (lastVideo) offer(lastVideo.blob, lastVideo.name); });
 $("discard").addEventListener("click", () => { $("result").hidden = true; if (lastVideo) { URL.revokeObjectURL(lastVideo.url); lastVideo = null; } });
